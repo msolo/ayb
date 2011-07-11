@@ -42,7 +42,7 @@ class PyConfig(object):
                  if k in self.__names__])
   
   def __repr__(self):
-    return '<PyConfig %r>' % self.__file__
+    return '<PyConfig %r @ %s>' % (self.__file__, self.__mtime__)
 
 
 class _MissingValue:
