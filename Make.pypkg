@@ -1,0 +1,42 @@
+all: package
+
+# TODO(msolomon) use zip packaging target.zip
+# generate pyc and pyo
+# FIXME(msolomon) assume all packages have an __init__.py
+PKG+=$(patsubst %,$(TARGDIR)/$(TARG)/%,$(PYFILES))
+
+package: $(addprefix $(TARGDIR)/$(TARG)/,$(PYFILES)) 
+
+# common targets
+clean:
+	rm -rf $(CLEANFILES)
+
+%.mkdir:
+	mkdir -p "$*"
+
+%.make:
+	$(MAKE) -C $* install
+
+.PHONY: all clean install test
+
+# default location for packages to get copied
+pkgdir=$(PYTOP)/py/
+
+ifeq ($(TARGDIR),)
+TARGDIR:=$(pkgdir)
+endif
+
+INSTALLFILES+=$(PYFILES)
+
+CLEANFILES+=*pyc *pyo $(TARGDIR)/$(TARG)
+
+PREREQ+=$(patsubst %,%.make,$(DEPS))
+
+test:
+	PYTHONPATH=.. python ./tests/_test.py
+
+install: $(INSTALLFILES)
+
+$(TARGDIR)/$(TARG)/%.py: %.py $(TARGDIR)/$(TARG).mkdir
+	cp "$*.py" "$@" 
+
