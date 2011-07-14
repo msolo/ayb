@@ -1,7 +1,7 @@
 '''Base objects and convenience wrappers for common 
 '''
 
-class View(object)
+class View(object):
   # make a restricted interface so data doesn't leak
   def __init__(self, delgate, view_attrs=()):
     self.delegate = delegate
