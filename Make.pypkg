@@ -33,7 +33,7 @@ CLEANFILES+=*pyc *pyo $(TARGDIR)/$(TARG)
 PREREQ+=$(patsubst %,%.make,$(DEPS))
 
 test:
-	PYTHONPATH=.. python ./tests/_test.py
+	$(foreach testfile,$(PYTESTFILES),PYTHONPATH=.. python $(testfile);)
 
 install: $(INSTALLFILES)
 

@@ -3,3 +3,4 @@
 .DEFAULT_GOAL:=
 
 PYFILES=$(wildcard *.py)
+PYTESTFILES=$(wildcard tests/*_test.py)

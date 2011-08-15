@@ -41,16 +41,16 @@ def rimport(name, globals=None, locals=None, fromlist=(),
   else:
     return module  
 
-# FIXME(msolomon) handle package imports
-def _pkg_import():
-    search_path = path
-    for mname in name.split('.'):
-      f, src_path, description = imp.find_module(mname, search_path)
-      module_data = imp.find_module(mname, search_path)
-      if module:
-      with f:
-        module = imp.load_module(mname, f, src_path, description)
-        _module_cache[path][mname] = module
-        if description[-1] == imp.PKG_DIRECTORY:
-          search_path = module.__path__
+# # FIXME(msolomon) handle package imports
+# def _pkg_import():
+#     search_path = path
+#     for mname in name.split('.'):
+#       f, src_path, description = imp.find_module(mname, search_path)
+#       module_data = imp.find_module(mname, search_path)
+#       if module:
+#       with f:
+#         module = imp.load_module(mname, f, src_path, description)
+#         _module_cache[path][mname] = module
+#         if description[-1] == imp.PKG_DIRECTORY:
+#           search_path = module.__path__
     
