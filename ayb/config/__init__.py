@@ -1,8 +1,8 @@
-"""Encapsulate a config that is based on python syntax.
+# Encapsulate a config that is based on python syntax.
+#
+# Store things in un-importable files so you are forced to treat the config
+# like an object, not a module.
 
-Store things in un-importable files so you are forced to treat the config like
-an object, not a module.
-"""
 
 import os
 import time
@@ -13,11 +13,10 @@ class PyConfig(object):
 
   All of our internal variables will be marked as such to prevent conflicts.
   """
-  def __init__(self, path, parent_config=None):
+  def __init__(self, path):
     self.__file__ = path
     self.__mtime__ = None
     self.__names__ = set()
-    self._parent_config = parent_config
     self._load()
 
   def _reload(self):
@@ -26,11 +25,7 @@ class PyConfig(object):
 
   def _load(self):
     with open(self.__file__) as f:
-      if self._parent_config:
-        _globals = self._parent_config._vars()
-      else:
-        _globals = {}
-
+      _globals = {}
       config_vars = {}
       exec f in _globals, config_vars
       self.__names__.update(config_vars.iterkeys())
@@ -38,7 +33,7 @@ class PyConfig(object):
       self.__mtime__ = os.path.getmtime(self.__file__)
 
   def _vars(self):
-    return dict([(k,v) for k,v in sorted(self.__dict__.iteritems())
+    return dict([(k,v) for k,v in self.__dict__.iteritems()
                  if k in self.__names__])
   
   def __repr__(self):
@@ -80,12 +75,13 @@ class MetaConfig(object):
     return d
 
 
-def load_configs(*path_list):
-  parent_config = None
-  config_list = []
-  for path in path_list:
-    config = PyConfig(path, parent_config)
-    parent_config = config
-    config_list.append(config)
+def load_configs(path_list, parse_args=False):
+  config_list = [PyConfig(path) for path in path_list]
+
+  if parse_args:
+    # deferred import to break cycle
+    from . import args
+    _, _, cli_config = args.parse()
+    config_list.append(cli_config)
     
   return MetaConfig(config_list)

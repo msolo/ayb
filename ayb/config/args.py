@@ -1,10 +1,12 @@
-'''Export command line args to standard builtin names OPTIONS and ARGS.
+# Export command line args to standard builtin names OPTIONS, ARGS and CONFIG.
+#
+# Use module so that there is one singleton parser.
 
-Use module so that there is one singleton parser.
-'''
+import __builtin__
+import time
 
 from optparse import *
-import time
+
 
 default_option_parser = OptionParser()
 add_option = default_option_parser.add_option
@@ -16,17 +18,22 @@ class CmdLineConfig(object):
     self.__file__ = '<command line>'
     self.__mtime__ = time.time()
     self.__dict__.update(default_values.__dict__)
+    self.__names__ = set(default_values.__dict__)
 
+  def _vars(self):
+    return dict([(k,v) for k,v in self.__dict__.iteritems()
+                 if k in self.__names__])
+  
   def __repr__(self):
     return '<CmdLineConfig %r @ %s>' % (self.__file__, self.__mtime__)
     
 # options can be used to standin as a piece of the config and can overrride
 # everything else in the chain.
 def parse():
-  import __builtin__
-  values = CmdLineConfig(default_option_parser.get_default_values())
-  options, args = default_option_parser.parse_args(values=values)
+  config = CmdLineConfig(default_option_parser.get_default_values())
+  options, args = default_option_parser.parse_args()
   __builtin__.OPTIONS = options
   __builtin__.ARGS = args
-  return options, args
+  __builtin__.CONFIG = config
+  return options, args, config
 
