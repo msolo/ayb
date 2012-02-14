@@ -4,3 +4,11 @@
 
 PYFILES=$(wildcard *.py)
 PYTESTFILES=$(wildcard tests/*_test.py)
+
+# default location for packages to get copied
+# FIXME(msolomon) remove this hack
+pkgdir=$(PYTOP)/dist/py/ayb
+
+ifeq ($(TARGDIR),)
+TARGDIR:=$(pkgdir)
+endif

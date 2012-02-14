@@ -19,12 +19,6 @@ clean:
 
 .PHONY: all clean install test
 
-# default location for packages to get copied
-pkgdir=$(PYTOP)/py/
-
-ifeq ($(TARGDIR),)
-TARGDIR:=$(pkgdir)
-endif
 
 INSTALLFILES+=$(PYFILES)
 
@@ -38,5 +32,5 @@ test:
 install: $(INSTALLFILES)
 
 $(TARGDIR)/$(TARG)/%.py: %.py $(TARGDIR)/$(TARG).mkdir
-	cp "$*.py" "$@" 
+	ln -s "$(abspath $*.py)" "$@" 
 
