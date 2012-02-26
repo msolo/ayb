@@ -363,5 +363,10 @@ def _perfcheck(object=None):
   print "_safe_repr:", t2 - t1
   print "pformat:", t3 - t2
 
+def install():
+  # alias this to fix implementation of pprint in other modules
+  import sys
+  sys.modules['pprint'] = sys.modules['bprint']
+
 if __name__ == "__main__":
   _perfcheck()
