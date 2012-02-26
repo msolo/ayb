@@ -9,70 +9,84 @@ import time
 
 
 class PyConfig(object):
-  """A namespace for the config.
-
-  All of our internal variables will be marked as such to prevent conflicts.
-  """
+  # A namespace for the config.
+  #
+  # All of our internal variables will be marked as such to prevent conflicts.
   def __init__(self, path):
-    self.__file__ = path
-    self.__mtime__ = None
-    self.__names__ = set()
+    self._file_ = os.path.abspath(path)
+    self._names_ = set()
+    self._mtime_ = None
     self._load()
 
+  # FIXME(msolomon) hook up reloader to inotify or something
   def _reload(self):
-    if os.path.getmtime(self.__file__) > self.__mtime__:
+    if os.path.getmtime(self._file_) > self._mtime_:
       self._load()
 
   def _load(self):
-    with open(self.__file__) as f:
+    with open(self._file_) as f:
       _globals = {}
       config_vars = {}
       exec f in _globals, config_vars
-      self.__names__.update(config_vars.iterkeys())
+      self._names_.update(config_vars.iterkeys())
+      self._mtime_ = os.path.getmtime(self._file_)
       self.__dict__.update(config_vars)
-      self.__mtime__ = os.path.getmtime(self.__file__)
 
-  def _vars(self):
+  def _config_vars(self):
     return dict([(k,v) for k,v in self.__dict__.iteritems()
-                 if k in self.__names__])
+                 if k in self._names_])
   
   def __repr__(self):
-    return '<PyConfig %r @ %s>' % (self.__file__, self.__mtime__)
+    return '<PyConfig %r @ %s>' % (self._file_, self._mtime_)
 
 
-class _MissingValue:
+class __MissingValue:
   pass
-MissingValue = _MissingValue()
+MissingValue = __MissingValue()
 
 
 class MetaConfig(object):
-  # config_list: a list of config objects to be resolved agains
+  # config_list: a list of config objects to be resolved against
   def __init__(self, config_list):
-    self.__config_list = config_list
-    for config in self.__config_list:
-      self.__dict__.update(config.__dict__)
+    self._config_list_ = config_list
+    self._names_ = set()
+    for config in self._config_list_:
+      config_vars = config._config_vars()
+      self._names_.update(config_vars.iterkeys())
+      self.__dict__.update(_vars)
 
   def _get_var(self, name):
     config_info = []
-    for config in reversed(self.__config_list):
+    for config in reversed(self._config_list_):
       value = getattr(config, name, MissingValue)
       config_info.append((config, value))
       if value is not MissingValue:
         break
     return config_info
 
-  def __getattr__(self, name):
-    config_info = self._get_var(name)
-    if config_info:
-      return config_info[-1][-1]
-    else:
-      raise AttributeError(name)
+  def _config_vars(self):
+    return dict([(name, getattr(self, name)) for name in self._names_])
 
-  def _vars(self):
+  def debug_vars(self):
     d = {}
-    for config in self.__config_list:
-      d.update(config._vars())
+    for config in self._config_list_:
+      for k, v in config._config_vars().iteritems():
+        d[k] = (v, config._file_)
     return d
+
+    
+# As a demo, you can see how data can be built up using programmatic
+# transforms on config data.
+class DeferredConfig(object):
+  def __init__(self, config):
+    self._config = config
+
+  def set_config(self, config):
+    self._config = config
+
+  @property
+  def log_path(self):
+    return os.path.join(self._config.file_root, 'log')
 
 
 def load_configs(path_list, parse_args=False):

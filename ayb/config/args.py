@@ -15,17 +15,17 @@ all_options = default_option_parser._get_all_options
 
 class CmdLineConfig(object):
   def __init__(self, default_values):
-    self.__file__ = '<command line>'
-    self.__mtime__ = time.time()
+    self._file_ = '<command line>'
+    self._mtime_ = time.time()
     self.__dict__.update(default_values.__dict__)
-    self.__names__ = set(default_values.__dict__)
+    self._names_ = set(default_values.__dict__)
 
-  def _vars(self):
+  def _config_vars(self):
     return dict([(k,v) for k,v in self.__dict__.iteritems()
-                 if k in self.__names__])
+                 if k in self._names_])
   
   def __repr__(self):
-    return '<CmdLineConfig %r @ %s>' % (self.__file__, self.__mtime__)
+    return '<CmdLineConfig %r @ %s>' % (self._file_, self._mtime_)
     
 # options can be used to standin as a piece of the config and can overrride
 # everything else in the chain.

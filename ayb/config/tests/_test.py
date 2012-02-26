@@ -16,4 +16,5 @@ test_constants = config.load_configs(['./tests/test_constants.py',
                                      True)
 assert test_constants.test == 1
 assert test_constants.file_arg == 'default-file.txt'
-print test_constants._vars()
+#print test_constants._vars()
+print test_constants.debug_vars()
