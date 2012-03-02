@@ -84,6 +84,12 @@ class DeferredConfig(object):
   def set_config(self, config):
     self._config = config
 
+  def __setattr__(self, name, value):
+    raise AttributeError('config object is read only')
+
+  def __getattr__(self, name):
+    return getattr(self._config, name)
+
   @property
   def log_path(self):
     return os.path.join(self._config.file_root, 'log')
