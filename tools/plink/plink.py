@@ -169,7 +169,7 @@ zf.close()
 
 try:
   exec run_code in run_globals
-except:
+except Exception:
   # Force the pure-python traceback printer, which correctly calls the loader
   # to resolve traceback sources.
   traceback.print_exc()
