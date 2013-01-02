@@ -1,0 +1,67 @@
+#!/usr/bin/env python
+
+import os
+import sys
+
+from distutils.core import setup, Distribution, Extension
+from optparse import OptionParser
+from pprint import pprint
+
+usage = '''%prog -m <module name> <source files, ...>
+
+A simple utility to compile a Python C extension from source files on the
+command line. This eliminates the need to make a setup.py in most cases.
+'''
+
+def vprint(fmt, *args):
+  if options.verbose:
+    if args:
+      fmt = fmt % args        
+    print fmt
+
+def vpprint(o):
+  if options.verbose:
+    pprint(o)
+
+def main(options, args, dist_args):
+  if options.help:
+    dist = Distribution()
+  else:  
+    if not options.module:
+      sys.exit('specify --module')
+    if not args:
+      sys.exit('specify source files')
+
+    ext = Extension(options.module, args)
+    dist = Distribution({'name': options.module, 'ext_modules': [ext]})
+
+  dist.script_name = 'pycc'
+  dist.script_args = dist_args
+  dist.parse_command_line()
+  vpprint(vars(dist))
+  dist.run_commands()
+
+
+if __name__ == '__main__':
+  try:
+    i = sys.argv.index('--')
+    dist_args = sys.argv[1:i]
+    pycc_args = sys.argv[i+1:]
+  except ValueError:
+    dist_args = []
+    pycc_args = sys.argv[1:]
+  dist_args.insert(0, 'build_ext')
+
+  parser = OptionParser(usage=usage, add_help_option=False)
+  parser.add_option('-h', '--help', action='store_true')
+  parser.add_option('-m', '--module')
+  parser.add_option('-v', '--verbose', action='store_true')
+  (options, args) = parser.parse_args(pycc_args)
+  if not args:
+    options.help = True
+  if options.help:
+    parser.print_help()
+    dist_args.insert(1, '--help')
+  main(options, args, dist_args)
+
+

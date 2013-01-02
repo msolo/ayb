@@ -1,0 +1,37 @@
+from metamake import error
+from metamake import target
+
+
+# Copy a list of files from src_root to out_root without modification.
+# This should not contain directories.
+class FileGroup(target.Target):
+  debug_mode = False
+  
+  def __init__(self, makefile, **kargs):
+    target.Target.__init__(self, makefile, **kargs)
+    if not self.data:
+      raise error.MakeError('FileGroup has no data files')
+    self.outs = self.data[:]
+
+  # Getting make to create directories is a bit tricky. For now, just create the
+  # directory everytime.
+  def gen_productions(self):
+    ctx = self.make_context()
+    b = []
+    for data_src in self.data:
+      ctx['data_src'] = data_src
+      if self.debug_mode:
+        b.append('''%(out_root)s/%(data_src)s: %(data_src)s
+\tmkdir -p $(@D)
+\tln -s $? $@
+''' % ctx)
+      else:
+        b.append('''%(out_root)s/%(data_src)s: %(data_src)s
+\tmkdir -p $(@D)
+\tcp $? $@
+''' % ctx)
+    return '\n'.join(b)
+
+@build_def
+def file_group(makefile, **kargs):
+  makefile.add_target(FileGroup(makefile, **kargs))

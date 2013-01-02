@@ -1,0 +1,60 @@
+from metamake import target
+
+
+class Archive(target.Target):
+  cmd = ''
+  extension = ''
+
+  def __init__(self, makefile, **kargs):
+    target.Target.__init__(self, makefile, **kargs)
+    self.outs = [self._name + self.extension]
+
+  # A list of all out files for immediate dependencies.
+  def deps_outs(self):
+    return target.flatten_iterables([dep.outs for dep in self.resolved_deps])
+
+  def make_context(self):
+    ctx = target.Target.make_context(self)
+    ctx.update({
+      'cmd': self.cmd,
+      'deps_outs_list': ' '.join([self.makefile.resolve_out_path(x)
+                                  for x in self.deps_outs()]),
+      'out': self.makefile.resolve_out_path(self.outs[0]),
+      })      
+    return ctx
+
+  def gen_productions(self):
+    ctx = self.make_context()
+    b = []
+    b.append('%(outs_list)s: %(srcs_list)s %(deps_outs_list)s' % ctx)
+    b.append('\t%(cmd)s $@ $^' % ctx)
+    b.append('')
+    return '\n'.join(b)
+
+
+class TgzFile(Archive):
+  cmd = 'tar czf'
+  extension = '.tgz'
+  
+@build_def
+def tgzfile(makefile, **kargs):
+  makefile.add_target(TgzFile(makefile, **kargs))
+
+
+class TbzFile(Archive):
+  cmd = 'tar cjf'
+  extension = '.tbz'
+
+@build_def
+def tbzfile(makefile, **kargs):
+  makefile.add_target(TbzFile(makefile, **kargs))
+
+
+class ZipFile(Archive):
+  cmd = 'zip -9'
+  extension = '.zip'
+
+@build_def
+def zipfile(makefile, **kargs):
+  makefile.add_target(ZipFile(makefile, **kargs))
+

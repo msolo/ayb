@@ -1,0 +1,123 @@
+import os
+
+from metamake import error
+from metamake import target
+
+
+class PyExe(target.Target):
+  debug_mode = True
+  
+  def __init__(self, makefile, name='', main='', python_binary='/usr/bin/python -ESs', **kargs):
+    target.Target.__init__(self, makefile, name=name, **kargs)
+    self.outs = [name + '.par']
+    self.clean_outs = ['__main__.py', '__run__.py']
+    self.clean_outs += [x.rsplit('.', 2)[0] + '.pyc' for x in self.clean_outs]
+    self.main = main
+    if main not in self.srcs:
+      self.srcs.append(main)
+
+  def make_context(self):
+    ctx = target.Target.make_context(self)
+    ctx.update({
+      'out': self.makefile.resolve_out_path(self.outs[0]),
+      'main': self.main,
+      'data_list': ' '.join([self.makefile.resolve_out_path(data_src)
+                             for data_src in self.all_data_files()])
+      })      
+    return ctx
+
+  def gen_productions(self):
+    ctx = self.make_context()
+    b = []
+    b.append('%(outs_list)s: %(srcs_list)s' % ctx)
+    if self.debug_mode:
+      b.append('\tplink -o %(out)s --main-file %(main)s %(out_root)s %(data_list)s' % ctx)
+    else:
+      b.append('\tplink --strip -o %(out)s --main-file %(main)s %(out_root)s %(data_list)s' % ctx)
+    b.append('')
+    return '\n'.join(b)
+
+
+class PyLib(target.Target):
+  debug_mode = False
+  
+  def __init__(self, makefile, **kargs):
+    target.Target.__init__(self, makefile, **kargs)
+    bad_srcs = [x for x in self.srcs if not x.endswith('.py')]
+    if bad_srcs:
+      raise error.MakeError('non .py source file not allowed', bad_srcs)
+    self.src_dirs = list(sorted(set([os.path.dirname(x) for x in self.srcs])))
+    self.outs = self.srcs + [x.rsplit('.', 2)[0] + '.pyc' for x in self.srcs]
+
+  # Getting make to create directories is a bit tricky. For now, just create the
+  # directory everytime.
+  def gen_productions(self):
+    ctx = self.make_context()
+    if self.debug_mode:
+      return '''%(out_root)s/%%.py: %%.py
+\tmkdir -p $(@D)
+\tln -s "$?" "$@"
+''' % ctx
+      
+    return '''#%%.mkdir:
+#\tmkdir -p "$*"
+
+%(out_root)s/%%.pyc %(out_root)s/%%.py: %%.py
+\tmkdir -p $(@D)
+\tcp "$?" "$@"
+''' % ctx
+
+  def gen_targets(self):
+    ctx = self.make_context()
+    return '''# %(name)s
+%(make_name)s.build: %(build_deps_list)s %(outs_list)s %(data_list)s;
+\tpython -m compileall -qld. %(out_root)s
+
+%(make_name)s.clean: %(clean_deps_list)s
+\trm -df %(outs_list)s %(clean_outs_list)s
+''' % ctx
+
+
+class PyExt(target.Target):
+  def __init__(self, makefile, **kargs):
+    target.Target.__init__(self, makefile, **kargs)
+    root, ext = os.path.splitext(self.srcs[0])
+    if ext == '.c':
+      ext = '.so'
+    out = root + ext
+    self.outs = [out]
+    self.module = root.replace('/', '.')
+
+  def make_context(self):
+    ctx = target.Target.make_context(self)
+    ctx.update({
+      'module': self.module,
+      })      
+    return ctx
+  
+  def gen_productions(self):
+    ctx = self.make_context()
+    return '''%(outs_list)s: %(srcs_list)s
+\tpycc --build-lib %(out_root)s --build-temp %(build_root)s -- --module %(module)s $^
+''' % ctx
+
+
+# Build up a directory structure to create a PAR file with plink.
+@build_def
+def py_exe(makefile, name='', **kargs):
+  # An exe is essentially an implied library target followed by a "link" step.
+  lib_name = '%s_exelib' % name
+  lib_srcs = kargs.pop('srcs')
+  lib_deps = kargs.pop('deps')
+  deps = [':%s' % lib_name]
+  makefile.add_target(PyLib(makefile, name=lib_name, srcs=lib_srcs, deps=lib_deps, **kargs))
+  makefile.add_target(PyExe(makefile, name=name, deps=deps, **kargs))
+
+# Build a C extension using distutils via pycc.
+@build_def
+def py_ext(makefile, **kargs):
+  makefile.add_target(PyExt(makefile, **kargs))
+
+@build_def
+def py_lib(makefile, **kargs):
+  makefile.add_target(PyLib(makefile, **kargs))

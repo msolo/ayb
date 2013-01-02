@@ -1,0 +1,57 @@
+#!/usr/bin/env python
+
+import __builtin__
+import os
+import pkgutil
+import sys
+
+from optparse import OptionParser
+from pprint import pprint
+
+from metamake import maker
+from metamake import makefile
+
+
+def vprint(fmt, *args):
+  if options.verbose:
+    if args:
+      fmt = fmt % args        
+    print fmt
+
+def vpprint(o):
+  if options.verbose:
+    pprint(o)
+
+__builtin__.vprint = vprint
+__builtin__.vpprint = vpprint
+
+def main(options, args):
+  __builtin__.OPTIONS = options
+  try:
+    mode, target = args
+  except ValueError:
+    mode, target = args[0], None
+  _maker = maker.Maker(options.src_root)
+  _maker.run(mode, target, options)
+  
+usage = '''%prog <mode> //<directory path>:<target name>
+
+Mode:
+  build - build a target and all related dependencies
+  clean - remove the output directory for a target
+  nuke - remove all output directories
+'''
+if __name__ == '__main__':
+  parser = OptionParser(usage=usage)
+  parser.add_option('-f', '--filename', default=maker.MAKEFILE_SRC)
+  parser.add_option('--src-root', default='.',
+                    help='root for relative target paths')
+  parser.add_option('-v', '--verbose', action='store_true', default=False)
+  parser.add_option('-n', '--dry-run', action='store_true')
+  parser.add_option('-d', '--debug', action='store_true')
+  parser.add_option('-j', '--jobs')
+  (options, args) = parser.parse_args()
+  if not args:
+    parser.print_help()
+  else:
+    main(options, args)

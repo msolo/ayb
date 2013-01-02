@@ -1,0 +1,15 @@
+metamake Theory of Operation
+
+Python is a nice config language - easy to read, easy to modify, clear
+and unambiguous syntax.
+
+make is ominpresent, fast, reliable and arcane.
+
+Making software is a huge pain and every project uses a different
+blend of tools that subtley conflict with each other. The goal of
+metamake is to easily federate across this twisted space.
+
+Dependencies and transformations are specified in Python. They are
+then reduced to a makefile for parallel execution and dependecy
+analysis. When a better dependency and execution engine comes along,
+migration is just a python script away.

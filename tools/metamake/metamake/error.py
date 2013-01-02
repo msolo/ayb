@@ -1,0 +1,3 @@
+class MakeError(Exception):
+  pass
+
