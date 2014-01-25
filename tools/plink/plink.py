@@ -1,4 +1,4 @@
-#!/usr/local/bin/python2.7
+#!/usr/bin/python2.7
 
 # Link a python source tree into a single self-executing zip archive.
 # The zip can also be extracted and run manually.
@@ -22,7 +22,7 @@ bootstrap_src_tmpl = r"""
 # Insert a custom importer to allow compressed .so files to load transparently.
 #
 # ${tracer}
-
+import __builtin__
 import cStringIO
 import errno
 import hashlib
@@ -35,18 +35,26 @@ import traceback
 import zipfile
 import zipimport
 
-compile_pymagic = ${compile_pymagic}
+# Extra debugging by brute force. Disabled in the average case.
+def enable_debug():
+  _python_import = __import__
+  def plink_import(name, globals=None, locals=None, fromlist=None, level=-1):
+    log('__import__ %s %s', name, fromlist)
+    try:
+      return _python_import(name, globals, locals, fromlist, level)
+    except ImportError:
+      log('__import__ %s %s failed', name, fromlist)
+      log('  sys.path: %s', sys.path)
+      log('  sys.path_hooks: %s', sys.path_hooks)
+      log('  sys.path_importer_cache: %s', list(sorted(sys.path_importer_cache.iteritems())))
+      raise
 
-newname = '_par_bootstrap_'
-_par_bootstrap_ = sys.modules[__name__]
-_par_bootstrap_.__name__ = newname
-sys.modules[newname] = _par_bootstrap_
-del sys.modules[__name__]
+  __builtin__.__import__ = plink_import
 
 def log(fmt, *args):
   if os.environ.get('PLINK_DEBUG'):
     if args:
-      fmt = fmt % args        
+      fmt = fmt % args
     print >> sys.stderr, 'plink: debug', fmt
 
 def log_warning(fmt, *args):
@@ -60,13 +68,16 @@ class ParImporter(zipimport.zipimporter):
       # Normally the first path item will be the our self-executing zip.
       # Otherwise, just skip it.
       log('ParImporter ignoring path:%s', path)
-      raise ImportError
+      raise ImportError('invalid ParImporter path', path)
     self.data_cache = {}
     zipimport.zipimporter.__init__(self, path)
     log('ParImporter init path:%s archive:%s prefix:%s', path, self.archive, self.prefix)
+
+  def __repr__(self):
+    return '<ParImporter %s>' % self.archive
   
   def find_module(self, fullname, path=None):
-    log('find_module %s', fullname)
+    log('find_module %s %s', fullname, path)
     data_path = fullname.replace('.', '/') + '.so'
 
     # Check for native .so modules first and track what needs to be extracted
@@ -121,13 +132,6 @@ class ParImporter(zipimport.zipimporter):
     module = zipimport.zipimporter.load_module(self, fullname)
     return module
 
-log('initial sys.path: %s', sys.path)
-sys.path_hooks.insert(0, ParImporter)
-
-m = hashlib.md5()
-m.update(open(sys.path[0]).read())
-par_signature = m.hexdigest()
-
 # Override the source returned. Otherwise the __run__ and __main__
 # modules get confused because both must be run as main to preserve
 # existing script behaviors.
@@ -144,18 +148,47 @@ class SourceLoader(object):
       return self.source_map[fullname]
     return self.loader.get_source(fullname)
 
+
+compile_pymagic = ${compile_pymagic}
+
+# Quickly rename our module out of the way to prevent a confusing stack trace.
+newname = '_par_bootstrap_'
+_par_bootstrap_ = sys.modules[__name__]
+_par_bootstrap_.__name__ = newname
+sys.modules[newname] = _par_bootstrap_
+del sys.modules[__name__]
+par_signature = '<unsigned>'
+
+if os.environ.get('PLINK_DEBUG'):
+  enable_debug()
+
+sys.path_hooks.insert(0, ParImporter)
+log('initial sys.path: %s', sys.path)
+log('initial sys.path_hooks: %s', sys.path_hooks)
+log('initial sys.path_importer_cache: %s', list(sorted(sys.path_importer_cache.iteritems())))
+
+m = hashlib.md5()
+with open(sys.path[0]) as f:
+  while True:
+    block = f.read(1024*1024)
+    if block:
+      m.update(block)
+    else:
+      break
+par_signature = m.hexdigest()
+
 zf = zipfile.ZipFile(sys.path[0], 'r')
 source_map = {
   '_par_bootstrap_': zf.read('__main__.py'),
   '__main__': zf.read('__run__.py'),
   }
 
+# Overwrite the default loader.
 __loader__ = SourceLoader(__loader__, source_map)
 
-run_globals = {
-  '__name__': '__main__',
-  '__loader__': __loader__,
-}
+# Overwrite the cached zipimporter with a ParImport so top-level .so dependencies
+# will be correctly resolved.
+sys.path_importer_cache[zf.filename] = ParImporter(zf.filename)
 
 runtime_pymagic = imp.get_magic() + '\000\000\000\000'
 if runtime_pymagic != compile_pymagic:
@@ -167,12 +200,18 @@ else:
   run_code = marshal.loads(run_pyc[len(runtime_pymagic):])
 zf.close()
 
+run_globals = {
+  '__name__': '__main__',
+  '__loader__': __loader__,
+}
+
 try:
   exec run_code in run_globals
 except Exception:
   # Force the pure-python traceback printer, which correctly calls the loader
   # to resolve traceback sources.
   traceback.print_exc()
+
 """
 
 
@@ -213,14 +252,14 @@ def zipdir(source_root, data_paths, options):
 def log(fmt, *args):
   if options.verbose:
     if args:
-      fmt = fmt % args        
+      fmt = fmt % args
     print >> sys.stderr, 'plink:', fmt
 
 options = None
 usage = """
 %prog --main-file <main source file> <zip source directory> [<data file>, ...]
 
-PLINK_DEBUG=1 ./module.par
+PLINK_DEBUG=1 ./pyapp.par
 """
 
 if __name__ == '__main__':
@@ -231,7 +270,7 @@ if __name__ == '__main__':
   p.add_option('--format', default='par')
   p.add_option('--main-file',
                help='name of python to run after bootstrap')
-  p.add_option('--python-binary', default='/usr/local/bin/python2.7 -ESs',
+  p.add_option('--python-binary', default=sys.executable + ' -ESs',
                help='adjust the shebang line of the output')
   (options, args) = p.parse_args()
 
