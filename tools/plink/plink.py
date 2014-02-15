@@ -290,10 +290,17 @@ def prepare_sys_packages(sys_pkg_list, pkg_dir):
 
 
 def log(fmt, *args):
-  if options.verbose:
+  return _log(0, fmt, *args)
+
+def log_debug(fmt, *args):
+  return _log(1, fmt, *args)
+
+def _log(log_level, fmt, *args):
+  if options.verbose > log_level:
     if args:
       fmt = fmt % args
-    print >> sys.stderr, 'plink:', fmt
+    print >> sys.stderr, fmt
+
 
 options = None
 usage = """
@@ -304,7 +311,7 @@ PLINK_DEBUG=1 ./pyapp.par
 
 if __name__ == '__main__':
   p = optparse.OptionParser(usage=usage)
-  p.add_option('-v', '--verbose', action='store_true')
+  p.add_option('-v', '--verbose', action='count', default=0)
   p.add_option('-o', '--output')
   p.add_option('--strip', action='store_true', help='strip .py files')
   p.add_option('--format', default='par')
@@ -335,7 +342,7 @@ if __name__ == '__main__':
     prepare_sys_packages(options.system_module, options.pkg_dir)
     
   bootstrap_src = mkbootstrap()
-  log('\n'.join(['%03d  %s' % (i+1, line) for (i, line) in enumerate( bootstrap_src.split('\n'))]))
+  log_debug('\n'.join(['%03d  %s' % (i+1, line) for (i, line) in enumerate( bootstrap_src.split('\n'))]))
 
   with open(options.main_file) as f:
     main_src = f.read()        
