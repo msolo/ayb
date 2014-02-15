@@ -4,7 +4,7 @@
 # The zip can also be extracted and run manually.
 #
 # Distributed under a BSD license.
-# Copyright (c) 2012 Mike Solomon
+# Copyright (c) 2012-2014 Mike Solomon
 
 import cStringIO
 import compileall
@@ -12,6 +12,7 @@ import imp
 import marshal
 import optparse
 import os
+import shutil
 import string
 import sys
 import zipfile
@@ -215,7 +216,7 @@ except Exception:
 """
 
 
-tracer = 'plink-tracer-19830319'
+tracer = 'plink-tracer-19810319'
 zipmagic = '\x50\x4B\x03\x04'
 compile_pymagic = imp.get_magic() + '\000\000\000\000'
 
@@ -249,6 +250,45 @@ def zipdir(source_root, data_paths, options):
   z.close()
   return b.getvalue()
 
+def copy_package(name, path, pkg_dir):
+  log('copy package %s %s -> %s', name, path, pkg_dir)
+  if path.endswith('.so'):
+    return shutil.copy(path, pkg_dir)
+  filename, _ = os.path.splitext(os.path.basename(path))
+  if filename == '__init__':
+    target = os.path.join(pkg_dir, name)
+    if os.path.isdir(target):
+      shutil.rmtree(target)
+    return shutil.copytree(os.path.dirname(path), target)
+  raise Exception('unknown package type', name, path)
+  
+
+# Generate a list of all names and paths that are required simply
+# to import a given module.
+def get_import_dependencies(module_name):
+  initial_names = frozenset(k for k,v in sys.modules.iteritems() if v)
+  m = __import__(module_name)
+  imported_names = frozenset(k for k,v in sys.modules.iteritems() if v) - initial_names
+  for name in sorted(imported_names):
+    path = getattr(sys.modules[name], '__file__', 'built-in')
+    # FIXME(mike) Sloppy heuristic here.
+    if 'dist-packages' in path:
+      yield name, path
+
+# Copy packages from the system install to the local staging area.
+# This is an escape hatch for less precise dependency management.
+def prepare_sys_packages(sys_pkg_list, pkg_dir):
+  top_packages = {}
+  for pkg in sys_pkg_list:
+    for dep_pkg, dep_path in get_import_dependencies(pkg):
+      top_package = dep_pkg.split('.')[0]
+      if top_package not in top_packages:
+        top_packages[top_package] = dep_path
+
+  for pkg, path in sorted(top_packages.iteritems()):
+    copy_package(pkg, path, pkg_dir)
+
+
 def log(fmt, *args):
   if options.verbose:
     if args:
@@ -257,7 +297,7 @@ def log(fmt, *args):
 
 options = None
 usage = """
-%prog --main-file <main source file> <zip source directory> [<data file>, ...]
+%prog --main-file <main source file> --pkg-dir <zip source directory> [<data file>, ...]
 
 PLINK_DEBUG=1 ./pyapp.par
 """
@@ -272,21 +312,27 @@ if __name__ == '__main__':
                help='name of python to run after bootstrap')
   p.add_option('--python-binary', default=sys.executable + ' -ESs',
                help='adjust the shebang line of the output')
+  p.add_option('--pkg-dir', default=None)
+  p.add_option('-L', '--system-module', action='append',
+               help='copy a system package / module into the staging area')
   (options, args) = p.parse_args()
-
-  if not args:
-    p.print_usage()
-    sys.exit(2)
 
   if not options.main_file:
     sys.exit('--main-file must be specified')
 
-  zip_root = args.pop(0)
+  if not options.pkg_dir:
+    sys.exit('--pkg-dir must be specified')
+
   if not options.output:
     options.output = '%s.%s' % (os.path.basename(options.main_file).rsplit('.', 1)[0], options.format)
 
+  zip_root = options.pkg_dir
   if not os.path.isdir(zip_root):
     sys.exit('source must be a directory')
+
+  # This will write data into the pkg_dir destructively.
+  if options.system_module:
+    prepare_sys_packages(options.system_module, options.pkg_dir)
     
   bootstrap_src = mkbootstrap()
   log('\n'.join(['%03d  %s' % (i+1, line) for (i, line) in enumerate( bootstrap_src.split('\n'))]))

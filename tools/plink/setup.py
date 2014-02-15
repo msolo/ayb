@@ -10,14 +10,14 @@ on demand. The zip input is staged and then compressed. The plink bootstrap
 module is embedded as __main__.py and the actual main module is copied to
 __run__.py. The result is an executable zip archive similar to Java JAR file.
 
-plink --main-file <main source file> <src directory>
+plink --main-file <main source file> --pkg-dir <src directory>
 
-PLINK_DEBUG=1 ./module.par
+PLINK_DEBUG=1 ./main-module.par
 '''
 
 setup(
   name='plink',
-  version='0.1',
+  version='0.2',
   description='Link a python source tree into a single self-executing zip archive.',
   author='Mike Solomon',
   author_email='<mas63 at cornell dot edu>',
