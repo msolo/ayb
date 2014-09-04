@@ -1,0 +1,30 @@
+#!/usr/bin/python
+
+from ayb.config import args
+from ayb.log import binary_logger
+
+if __name__ == '__main__':
+  args.add_option('--raw-decode', action='store_true')
+  args.add_option('--write-test-data')
+  options, args, _ = args.parse()
+
+  if options.write_test_data:
+    import logging
+    import sys
+    from ayb.log import config
+    config.init_binary_logging('/tmp/binary-log-test')
+    logging.debug('test debug')
+    logging.info('test info: %s', 'with arg')
+    sys.exit()
+    logging.error('test error')
+    try:
+      raise Exception('test thrown exception')
+    except:
+      logging.exception('test exception')
+    
+    sys.exit()
+  
+  f = binary_logger.open_binary_log(args[0])
+  f.validate_checksum = not options.raw_decode
+  for record in f:
+    print record
