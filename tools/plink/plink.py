@@ -1,4 +1,4 @@
-#!/usr/bin/python2.7
+#!/usr/local/bin/python
 
 # Link a python source tree into a single self-executing zip archive.
 # The zip can also be extracted and run manually.
@@ -8,6 +8,7 @@
 
 import cStringIO
 import compileall
+import errno
 import imp
 import marshal
 import optparse
@@ -197,7 +198,10 @@ if runtime_pymagic != compile_pymagic:
   run_py = zf.read('__run__.py')
   run_code = compile(run_py, '__run__.py', 'exec')
 else:
-  run_pyc = zf.read('__run__.pyc')
+  try:
+    run_pyc = zf.read('__run__.pyc')
+  except KeyError:
+    run_pyc = zf.read('__run__.pyo')
   run_code = marshal.loads(run_pyc[len(runtime_pymagic):])
 zf.close()
 
@@ -235,7 +239,12 @@ def zipdir(source_root, data_paths, options):
   for root, dirs, files in os.walk(source_root):
     for f in sorted(files):
       if f.endswith(('.py', '.pyc', '.pyo', '.so')):
-        if options.strip and f.endswith('.py'):
+        if sys.flags.optimize:
+          strip_extensions = ('.py', '.pyc')
+        else:
+          strip_extensions = ('.py', )
+        if (options.strip and f.endswith(strip_extensions) and
+            not f.endswith(('__main__.py', '__run__.py', '__main__.pyc', '__run__.pyc'))):
           continue
         realpath = os.path.join(root, f)
         arcpath = realpath.replace(prefix, '')
@@ -251,42 +260,98 @@ def zipdir(source_root, data_paths, options):
   return b.getvalue()
 
 def copy_package(name, path, pkg_dir):
+  bundle_paths = []
+  sys_prefix = os.path.abspath(sys.prefix)
+  for ppath in sys.path:
+    ppath = os.path.abspath(ppath)
+    if ppath.startswith(sys_prefix):
+      bundle_paths.append(ppath)
+  bundle_paths.sort()
+  if path.startswith(tuple(bundle_paths)):
+    return
+
   log('copy package %s %s -> %s', name, path, pkg_dir)
   if path.endswith('.so'):
     return shutil.copy(path, pkg_dir)
-  filename, _ = os.path.splitext(os.path.basename(path))
+
+  filename, ext = os.path.splitext(os.path.basename(path))
   if filename == '__init__':
-    target = os.path.join(pkg_dir, name)
+    target = os.path.join(pkg_dir, name.replace('.', '/'))
     if os.path.isdir(target):
       shutil.rmtree(target)
-    return shutil.copytree(os.path.dirname(path), target)
+    ignore = shutil.ignore_patterns(*options.exclude_module)
+    shutil.copytree(os.path.dirname(path), target, ignore=ignore)
+    if '.' in name:
+      tmp_pkg_dir = pkg_dir
+      for dirname in name.split('.'):
+        tmp_pkg_dir = os.path.join(tmp_pkg_dir, dirname)
+        open(os.path.join(tmp_pkg_dir, '__init__.py'), 'a').close()
+    return
+  if ext in ('.py', '.pyc', '.pyo'):
+    try:
+      os.makedirs(os.path.join(pkg_dir, *name.split('.')[:-1]))
+    except OSError as e:
+      if e[0] != errno.EEXIST:
+        raise
+    try:
+      return shutil.copy(path, os.path.join(pkg_dir, *name.split('.')) + ext)
+    except IOError as e:
+      if e[0] == errno.ENOTDIR:
+        fnames = path.split('/')
+        for i, fname in enumerate(fnames):
+          if fname.endswith('.egg'):
+            egg_file = '/'.join(fnames[:i+1])
+            egg_name = '/'.join(fnames[i+1:])
+            break
+        zipfile.ZipFile(egg_file, 'r').extract(egg_name, pkg_dir)
+        return
+  if path == 'built-in':
+    return
   raise Exception('unknown package type', name, path)
-  
 
 # Generate a list of all names and paths that are required simply
 # to import a given module.
 def get_import_dependencies(module_name):
   initial_names = frozenset(k for k,v in sys.modules.iteritems() if v)
-  m = __import__(module_name)
+  __import__(module_name)
+  m = sys.modules[module_name]
+  mpath = getattr(m, '__file__', 'built-in')
   imported_names = frozenset(k for k,v in sys.modules.iteritems() if v) - initial_names
+  dep_pkg_paths = []
   for name in sorted(imported_names):
     path = getattr(sys.modules[name], '__file__', 'built-in')
     # FIXME(mike) Sloppy heuristic here.
-    if 'dist-packages' in path:
-      yield name, path
+    #if 'dist-packages' in path or 'site-packages' in path:
+    #  yield name, path
+    #log('skipping path for module %s %s', module_name, path)
+    dep_pkg_paths.append((name, path))
+  return (module_name, mpath), dep_pkg_paths
 
 # Copy packages from the system install to the local staging area.
 # This is an escape hatch for less precise dependency management.
 def prepare_sys_packages(sys_pkg_list, pkg_dir):
   top_packages = {}
   for pkg in sys_pkg_list:
-    for dep_pkg, dep_path in get_import_dependencies(pkg):
-      top_package = dep_pkg.split('.')[0]
-      if top_package not in top_packages:
-        top_packages[top_package] = dep_path
-
-  for pkg, path in sorted(top_packages.iteritems()):
+    log('check sys package %s', pkg)
+    (pkg, path), dep_pkg_paths = get_import_dependencies(pkg)
+    print 'pkg', pkg, path
     copy_package(pkg, path, pkg_dir)
+    top_packages[pkg] = path
+    for dep_pkg, dep_path in dep_pkg_paths:
+      print 'dep', pkg, dep_pkg, dep_path
+      copy_package(dep_pkg, dep_path, pkg_dir)
+      top_packages[dep_pkg] = dep_path
+
+      # top_package = '.'.join(dep_pkg.split('.')[:-1])
+      # if not top_package:
+      #   continue
+      # log('check top package %s', top_package)
+      # if top_package not in top_packages:
+      #   copy_package(dep_pkg, dep_path, pkg_dir)
+      #   top_packages[top_package] = dep_path
+
+  #for pkg, path in sorted(top_packages.iteritems()):
+  #  copy_package(pkg, path, pkg_dir)
 
 
 def log(fmt, *args):
@@ -309,7 +374,8 @@ usage = """
 PLINK_DEBUG=1 ./pyapp.par
 """
 
-if __name__ == '__main__':
+def main():
+  global options
   p = optparse.OptionParser(usage=usage)
   p.add_option('-v', '--verbose', action='count', default=0)
   p.add_option('-o', '--output')
@@ -322,6 +388,8 @@ if __name__ == '__main__':
   p.add_option('--pkg-dir', default=None)
   p.add_option('-L', '--system-module', action='append',
                help='copy a system package / module into the staging area')
+  p.add_option('-X', '--exclude-module', action='append',
+               help='exclude packages matching by name')
   (options, args) = p.parse_args()
 
   if not options.main_file:
@@ -334,6 +402,8 @@ if __name__ == '__main__':
     options.output = '%s.%s' % (os.path.basename(options.main_file).rsplit('.', 1)[0], options.format)
 
   zip_root = options.pkg_dir
+  if not os.path.exists(options.pkg_dir):
+    os.mkdir(options.pkg_dir)
   if not os.path.isdir(zip_root):
     sys.exit('source must be a directory')
 
@@ -363,3 +433,6 @@ if __name__ == '__main__':
     f.write(code)
 
   os.chmod(options.output, 0755)
+
+if __name__ == '__main__':
+  main()
