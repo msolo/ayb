@@ -320,39 +320,24 @@ def get_import_dependencies(module_name):
   dep_pkg_paths = []
   for name in sorted(imported_names):
     path = getattr(sys.modules[name], '__file__', 'built-in')
-    # FIXME(mike) Sloppy heuristic here.
-    #if 'dist-packages' in path or 'site-packages' in path:
-    #  yield name, path
-    #log('skipping path for module %s %s', module_name, path)
     dep_pkg_paths.append((name, path))
   return (module_name, mpath), dep_pkg_paths
 
 # Copy packages from the system install to the local staging area.
 # This is an escape hatch for less precise dependency management.
 def prepare_sys_packages(sys_pkg_list, pkg_dir):
-  top_packages = {}
+  copied_packages = {}
   for pkg in sys_pkg_list:
     log('check sys package %s', pkg)
     (pkg, path), dep_pkg_paths = get_import_dependencies(pkg)
-    print 'pkg', pkg, path
     copy_package(pkg, path, pkg_dir)
-    top_packages[pkg] = path
+    copied_packages[pkg] = path
     for dep_pkg, dep_path in dep_pkg_paths:
-      print 'dep', pkg, dep_pkg, dep_path
+      if dep_pkg in copied_packages:
+        continue
+      log('check sys dep package %s %s %s', pkg, dep_pkg, dep_path)
       copy_package(dep_pkg, dep_path, pkg_dir)
-      top_packages[dep_pkg] = dep_path
-
-      # top_package = '.'.join(dep_pkg.split('.')[:-1])
-      # if not top_package:
-      #   continue
-      # log('check top package %s', top_package)
-      # if top_package not in top_packages:
-      #   copy_package(dep_pkg, dep_path, pkg_dir)
-      #   top_packages[top_package] = dep_path
-
-  #for pkg, path in sorted(top_packages.iteritems()):
-  #  copy_package(pkg, path, pkg_dir)
-
+      copied_packages[dep_pkg] = dep_path
 
 def log(fmt, *args):
   return _log(0, fmt, *args)
