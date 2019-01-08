@@ -1,0 +1,438 @@
+#!/usr/bin/python2.7
+
+__doc__ = '''
+Frontend to repobuild to bridge the gap to metamake.
+
+Choosing working directories is annoying.
+
+"root dir" is the location of your source
+"tmp dir" is the location where things are compiled
+
+"root dir" can be found by looking for top-most BUILD file in a directory tree.
+"tmp dir" is a function of root dir name and build parameters.
+
+'''
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+usage = '''%(prog)s <command> //<directory path>:<target name>
+'''
+
+class MetamakeError(Exception):
+  pass
+
+class JsonSyntaxError(MetamakeError):
+  def __init__(self, filename, json_exception):
+    self.fname = filename
+    self.msg = str(json_exception)
+    self.line_no = int(self.msg.split(' line ')[-1].split()[0])
+
+  def __str__(self):
+    return '%s:%s:%s' % (self.fname, self.line_no, self.msg)
+
+def extract_make_args(args):
+  # Disable build-in rules by default. We shouldn't rely on them.
+  make_args = ['make', '-r', '-f', 'Makefile.%s' % args.mode]
+  if args.verbose:
+    make_args.append('--debug=b')
+  if args.dry_run:
+    make_args.append('-n')
+  if args.debug_make:
+    make_args.append('-d')
+  if args.jobs > 1:
+    make_args.append('-j%d' % args.jobs)
+  if getattr(args, 'force_build', False):
+    make_args.append('-B')
+  make_args.extend(args.make_args)
+  return [os.path.expandvars(x) for x in make_args]
+
+def extract_repobuild_args(args):
+  build_mode = args.mode
+  makefile = 'Makefile.' + build_mode
+  base_dir = build_mode
+  repobuild_args = [args.repobuild_bin,
+    '--makefile=%s' % makefile,
+    '--binary_dir=%s/bin' % base_dir,
+    '--genfile_dir=%s/gen-files' % base_dir,
+    '--object_dir=%s/gen-objs' % base_dir,
+    '--package_dir=%s/gen-pkg' % base_dir,
+    '--source_dir=%s/gen-src' % base_dir,
+    '--root_dir=%s' % args.root_dir,
+    '--add_default_flags=false',
+    '-C=clang=-Wno-c++98-compat',
+    '-C=clang=-Wno-c++98-compat-pedantic',
+    '-C=clang=-Wno-unused-parameter',
+    '-C=clang=-Wno-weak-vtables',
+    '-X=-std=c++11',
+    '-X=-DUSE_CXX0X',
+    '-C=-pthread',
+    '-C=-Wall',
+    '-C=-Werror',
+    '-C=-Wno-sign-compare',
+    '-C=gcc=-Wno-unused-local-typedefs',
+    '-C=gcc=-Wno-error=unused-local-typedefs',
+    '-C=clang=-Qunused-arguments',
+    '-C=clang=-fcolor-diagnostics'
+    ]
+  if build_mode == 'dbg':
+    repobuild_args.append('-C=-DDEBUG')
+    repobuild_args.append('-C=-g3')
+  elif build_mode == 'asan' or build_mode == 'tsan' or build_mode == 'msan':
+    # Build with address/thread sanitizer
+    repobuild_args.append('-C=-DDEBUG')
+    repobuild_args.append('-C=-g')
+    repobuild_args.append('-C=-O1')
+    if build_mode == 'asan':
+      repobuild_args.append('-C=-DADDRESS_SANITIZER')
+      repobuild_args.append('-C=-fsanitize=address')
+      repobuild_args.append('-L=-ldl')
+    elif build_mode == 'msan':
+      repobuild_args.append('-C=-DADDRESS_SANITIZER')
+      repobuild_args.append('-C=-fsanitize=memory')
+      repobuild_args.append('-L=-ldl')
+    else:
+      repobuild_args.append('-C=-DTHREAD_SANITIZER')
+      repobuild_args.append('-C=-DDYNAMIC_ANNOTATIONS_ENABLED=1')
+      repobuild_args.append('-C=-DDYNAMIC_ANNOTATIONS_EXTERNAL_IMPL=1')
+      repobuild_args.append('-C=-fsanitize=thread')
+      repobuild_args.append('-C=-fPIE')
+      repobuild_args.append('-L=-pie')
+      repobuild_args.append('-L=-fPIE')
+      repobuild_args.append('-L=-fsanitize=thread')
+    repobuild_args.append('-C=-fno-omit-frame-pointer')
+  elif build_mode == 'opt':
+    # Extra optimizaiton, with link time optimization to reduce binary
+    # size and increase linking time.
+    repobuild_args.append('-C=-DNDEBUG')
+    # We add debug info even for opt build to help debugging.
+    repobuild_args.append('-C=-g')
+    repobuild_args.append('-C=-O3')
+    if not getattr(args, 'nolto', False):
+      repobuild_args.append('-C=-flto')
+      repobuild_args.append('-L=-flto')
+  elif build_mode == 'fastbuild':
+    # Default build mode
+    repobuild_args.append('-C=-g')
+  else:
+    raise MetamakeError('Unknown build mode: ' + build_mode)
+
+  repobuild_args.extend(args.repobuild_args)
+  return [os.path.expandvars(x) for x in repobuild_args]
+
+def get_target_data(args, target):
+  build_data = parse_build(os.path.join(args.root_dir, target.build_path))
+  if target.name in ('all', 'allrec'):
+    return ('virtual', {})
+  for target_dict in build_data:
+    # There should only be one target per dict. This is weird
+    # data model.
+    target_type, target_properties = target_dict.items()[0]
+    # Some targets do not have a name.
+    if target_properties.get('name') == target.name:
+      return target_type, target_properties
+  raise MetamakeError('no such target', str(target))
+
+def prepare_builddir(args, build_cwd):
+  '''Setup top level build directory.
+  
+  Suppose the current user is foo, and top level source directory is
+  /home/foo/main, and build mode is 'fastbuild', 
+  this function will:
+
+  - Check if /home/foo/main/fastbuild exists
+  - Otherwise create /run/shm/foo/build/home/foo/main/fastbuild
+  - Symlink it to /home/foo/main/fastbuild
+  '''
+  os.chdir(build_cwd)
+  name = os.path.basename(args.root_dir)
+  symlink = args.mode
+  # Always update the symlink
+  if args.tmp_dir != '':
+    to_create = os.path.join(args.tmp_dir, name, args.mode)
+    if not os.path.exists(to_create):
+      os.makedirs(to_create)
+    if os.path.lexists(symlink):
+      # Remove the symlink since it may point to a non-existing target
+      try:
+        os.remove(symlink)
+      except OSError:
+        print >> sys.stderr, 'Please delete %s manually' % (symlink)
+        raise
+    os.symlink(to_create, symlink)
+  else:
+    raise MetamakeError('tmp-dir can not be empty')
+
+  # Create a symblink from Makefile to Makefile.$mode
+  if os.path.lexists('Makefile'):
+    os.remove('Makefile')
+  os.symlink('Makefile.' + args.mode, 'Makefile')
+
+def cmd_build(args):
+  make_args = extract_make_args(args)
+  repobuild_args = extract_repobuild_args(args)
+  target_list = []
+  for target_name in args.targets:
+    target = parse_target(target_name)
+    target_list.append(target)
+    target_type, target_props = get_target_data(args, target)
+    # Apply any 'preprocessing' needed before we delegate to repobuild.
+    if target_type == 'py_binary':
+      apt_deps = target_props.get('apt-deps', ())
+      if apt_deps:
+        if args.dry_run:
+          exec_cmd(args, ['sudo', 'apt-get', '--dry-run', '-y', 'install',] + apt_deps)
+        else:
+          exec_cmd(args, ['sudo', 'apt-get', '-y', 'install',] + apt_deps)
+        print >> sys.stderr, 'forcing local execution'
+        args.local = True
+          
+  if any(x.absolute_target for x in target_list):
+    build_cwd = args.root_dir
+  else:
+    build_cwd = os.getcwd()
+
+  repobuild_args.extend([str(x) for x in target_list])
+  prepare_builddir(args, build_cwd)
+  if args.local:
+    exec_cmd(args, repobuild_args)
+    exec_cmd(args, make_args)
+  else:
+    exec_in_container(args, repobuild_args, make_args, build_cwd)
+
+def cmd_tests(args):
+  make_args = extract_make_args(args)
+  repobuild_args = extract_repobuild_args(args)
+  target_list = []
+  for target_name in args.targets:
+    target = parse_target(target_name)
+    target_list.append(target)
+    target_type, target_props = get_target_data(args, target)
+    # Apply any 'preprocessing' needed before we delegate to repobuild.
+    if target_type == 'py_binary':
+      apt_deps = target_props.get('apt-deps', ())
+      if apt_deps:
+        if args.dry_run:
+          exec_cmd(args, ['sudo', 'apt-get', '--dry-run', '-y', 'install',] + apt_deps)
+        else:
+          exec_cmd(args, ['sudo', 'apt-get', '-y', 'install',] + apt_deps)
+        print >> sys.stderr, 'forcing local execution'
+        args.local = True
+          
+  if any(x.absolute_target for x in target_list):
+    build_cwd = args.root_dir
+  else:
+    build_cwd = os.getcwd()
+
+  repobuild_args.extend([str(x) for x in target_list])
+  make_args.append('tests')
+  prepare_builddir(args, build_cwd)
+  if args.local:
+    exec_cmd(args, repobuild_args)
+    exec_cmd(args, make_args)
+  else:
+    exec_in_container(args, repobuild_args, make_args, build_cwd)
+
+def cmd_clean(args):
+  make_args = extract_make_args(args)
+  repobuild_args = extract_repobuild_args(args)
+  target_list = []
+  for target_name in args.targets:
+    target = parse_target(target_name)
+    target_list.append(target)
+          
+  if any(x.absolute_target for x in target_list):
+    build_cwd = args.root_dir
+  else:
+    build_cwd = os.getcwd()
+
+  repobuild_args.extend([str(x) for x in target_list])
+  make_args.append('clean')
+  
+  # This only makes sense to exec locally, but lo and behold,
+  # repobuild has a bug. If your JSON file mentions Go in any sort of
+  # abstract sense, it tries to load up the Go runtime. Thus, you need
+  # to start up a full container to essentially run rm.
+  prepare_builddir(args, build_cwd)
+  if args.local:
+    exec_cmd(args, repobuild_args)
+    exec_cmd(args, make_args)
+  else:
+    exec_in_container(args, repobuild_args, make_args, build_cwd)
+
+def exec_in_container(args, repobuild_args, make_args, build_cwd):
+  container_args = [args.container_bin,
+    '/bin/bash',
+    '-c', '%s && %s' % (' '.join(repobuild_args), ' '.join(make_args)),
+    ]
+  exec_cmd(args, container_args)
+
+def exec_cmd(args, argv):
+  if args.dry_run or args.verbose:
+    #print 'exec_cmd argv: ', argv
+    print 'exec:', ' '.join(argv)
+    if args.dry_run:
+      return
+  subprocess.check_call(argv)
+
+  
+class Target:
+  def __init__(self, build_path, name, absolute_target):
+    self.build_path = build_path
+    self.name = name
+    self.absolute_target = absolute_target
+
+  def __str__(self):
+    return self.build_path + ':' + self.name
+
+
+def parse_target(spec):
+  build_path, name = spec.split(':')
+  absolute_target = build_path.startswith('//')
+  if absolute_target:
+    build_path = build_path[2:]
+    
+  return Target(build_path, name, absolute_target)
+
+def parse_build(build_path):
+  try:
+    fname = os.path.join(build_path, 'BUILD')
+    build_config = json.load(open(fname))
+    return build_config
+  except IOError as e:
+    raise MetamakeError('Missing BUILD file' + fname)
+  except ValueError as e:
+    raise JsonSyntaxError(fname, e)
+
+# Compute a reasonable level of parallelism.
+def default_job_count():
+  max_proc_id = 0
+  with open('/proc/cpuinfo') as f:
+    for line in f:
+      fields = line.strip().split(':')
+      if fields[0].strip() == 'processor':
+        max_proc_id = int(fields[1])
+  return (max_proc_id+1) * 2
+  
+# Find the top-most directory containing a BUILD file crawling upward
+# from the nearest BUILD file.
+def find_root_dir():
+  current_dir = find_build_file()
+  parent_dir = os.path.dirname(current_dir)
+  while parent_dir != '/':
+    if os.path.exists(os.path.join(parent_dir, 'BUILD')):
+      current_dir = parent_dir
+      parent_dir = os.path.dirname(current_dir)
+    else:
+      return current_dir
+  raise MetamakeError('no build root found', os.getcwd())
+
+# Find nearest BUILD file by crawling upward from the current working
+# directory.
+def find_build_file():
+  current_dir = os.getcwd()
+  while current_dir != '/':
+    if os.path.exists(os.path.join(current_dir, 'BUILD')):
+      return current_dir
+    current_dir = os.path.dirname(current_dir)
+  raise MetamakeError('no BUILD found', os.getcwd())
+    
+# In case NetworkManager gets involved, the address of your external
+# address is hidden. This is one way around it as I've not seen a better
+# API.
+def find_dns_server():
+  for conf in ('/etc/resolv.conf', '/etc/resolvconf/resolv.conf.d/original'):
+    with open(conf) as f:
+      for line in f:
+        if line.startswith('#'):
+          continue
+        k, v = line.strip().split()
+        if k == 'nameserver' and not v.startswith('127.'):
+          return v
+  raise MetamakeError('no external DNS server found')
+
+def tmp_dir(args):
+  if args.tmp_dir:
+    return args.tmp_dir
+  root_name = os.path.basename(args.root_dir)
+  return os.path.join(os.path.dirname(args.root_dir), 'tmp', root_name)
+
+def main():
+  parser = argparse.ArgumentParser(usage=usage,
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+  subparsers = parser.add_subparsers(dest='command', help='sub-command help')
+  parser.add_argument('-v', '--verbose', action='store_true')
+  parser.add_argument('-n', '--dry-run', action='store_true')
+  parser.add_argument('-d', '--debug-make', action='store_true',
+                      help='debug the mm/repobuild/make chain')
+  parser.add_argument('-j', '--jobs', type=int, default=default_job_count())
+  parser.add_argument('--local', action='store_true',
+                      help='run locally on client, not inside build container')
+  parser.add_argument('--container-bin', default='build-run',
+                      help='a script that allow the build to run in a disposable container')
+  parser.add_argument('-c', '--mode',
+                      default='fastbuild',
+                      choices=['fastbuild', 'dbg', 'opt', 'asan', 'msan', 'tsan'],
+                      help='build mode:'
+                      ' fastbuild: default, with minimal debug information and no optimization;'
+                      ' dbg: with extra debugging information;'
+                      ' opt: turn off debug check, enable extra optimization and lto;'
+                      ' asan: with address sanitizer to check memory error like use after free;'
+                      ' tsan: with thread sanitizer to check data race between threads')
+  parser.add_argument('--repobuild-bin', default='repobuild',
+                      help='specify a custom path to repobuild binary')
+  parser.add_argument('--repobuild-args', action='append', default=[],
+                      help='specify a custom args to the repobuild binary')
+  parser.add_argument('--make-args', action='append', default=[],
+                      help='specify a custom args to the make binary')
+  parser.add_argument('--root-dir', default=find_root_dir())
+  parser.add_argument('--tmp-dir', default='/run/shm/%s/build' % os.environ['USER'])
+  build_parser = subparsers.add_parser('build',
+      help='build a target and all related dependencies')
+  build_parser.add_argument('-B', '--force-build',  action='store_true',
+                            help='force build even if targets are up-to-date')
+  build_parser.add_argument('--nolto', action='store_true',
+                            help='Disable link time optimization in opt build to speed linking')
+  build_parser.add_argument('targets', nargs='+')
+
+  tests_parser = subparsers.add_parser('tests',
+      help='build a target and all related dependencies and then execute all tests')
+  tests_parser.add_argument('-B', '--force-build',  action='store_true',
+                            help='force build even if targets are up-to-date')
+  tests_parser.add_argument('--nolto', action='store_true',
+                            help='Disable link time optimization in opt tests to speed linking')
+  tests_parser.add_argument('targets', nargs='+')
+
+  clean_parser = subparsers.add_parser('clean',
+      help='remove the output directory for a target')
+  clean_parser.add_argument('targets', nargs='+')
+
+
+  nuke_parser = subparsers.add_parser('nuke',
+      help='remove all output directories')
+  nuke_parser.add_argument('targets', nargs='+')
+
+  args = parser.parse_args()
+  try:
+    cmd = globals()['cmd_' + args.command.replace('-', '_')]
+  except KeyError:
+    parser.print_help()
+    sys.exit(1)
+
+  try:
+    return cmd(args)
+  except MetamakeError as e:
+    if args.debug_make:
+      raise
+    print >> sys.stderr, e
+    sys.exit(1)
+  except subprocess.CalledProcessError as e:
+    if args.debug_make:
+      raise
+    sys.exit(e.returncode)
+
+if __name__ == '__main__':
+  main()

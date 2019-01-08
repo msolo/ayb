@@ -30,7 +30,7 @@ class PickleIO(object):
       data = cPickle.dumps(self._getter(item), cPickle.HIGHEST_PROTOCOL)
     data_len, checksum = len(data), zlib.adler32(data)
     header = struct.pack(self.record_header_format, data_len, checksum)
-    print "data_len", data_len, "checksum", checksum
+    #print "data_len", data_len, "checksum", checksum
     return header + data
     
 
@@ -41,6 +41,7 @@ class PickleRecordWriter(PickleIO):
 
 class PickleRecordReader(PickleIO):
   validate_checksum = True
+  follow = True
   
   def seek(self, record_offset):
     self.pfile.seek(record_offset)
@@ -58,12 +59,23 @@ class PickleRecordReader(PickleIO):
     else:
       return record
 
+  def _read(self, size):
+    while True:
+      pos = self.tell()
+      raw_data = self.pfile.read(size)
+      if raw_data:
+        return raw_data
+      if not self.follow:
+        return None
+      self.seek(pos)
+    
   def read_record(self):
-    raw_data = self.pfile.read(self.record_header_size)
+    pos = self.tell()
+    raw_data = self._read(self.record_header_size)
     if not raw_data:
       return None
     data_len, checksum = struct.unpack(self.record_header_format, raw_data)
-    data = self.pfile.read(data_len)
+    data = self._read(data_len)
     new_checksum = zlib.adler32(data)
     if self.validate_checksum and checksum != new_checksum:
       # FIXME(msolomon) we could creep along byte-by-byte and see if we
